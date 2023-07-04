@@ -20,6 +20,7 @@
 #include "hw/i2c/esp32_i2c.h"
 #include "hw/xtensa/xtensa_memory.h"
 #include "hw/misc/unimp.h"
+#include "hw/misc/unimp-default.h"
 #include "hw/irq.h"
 #include "hw/i2c/i2c.h"
 #include "hw/qdev-properties.h"
@@ -211,6 +212,11 @@ static void esp32_soc_reset(DeviceState *dev)
         }
 
         device_cold_reset(DEVICE(&s->rgb));
+        device_cold_reset(DEVICE(&s->unknown));
+        device_cold_reset(DEVICE(&s->ana));
+        device_cold_reset(DEVICE(&s->wifi));
+        device_cold_reset(DEVICE(&s->phya));
+        device_cold_reset(DEVICE(&s->fe));
     }
     if (s->requested_reset & ESP32_SOC_RESET_PROCPU) {
         xtensa_select_static_vectors(&s->cpu[0].env, s->rtc_cntl.stat_vector_sel[0]);
@@ -276,11 +282,37 @@ static void esp32_soc_add_periph_device(MemoryRegion *dest, void* dev, hwaddr dp
     g_free(name);
 }
 
+static void esp32_soc_add_periph_device_prio(MemoryRegion *dest, void *dev,
+                                             hwaddr dport_base_addr, int priority)
+{
+    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0);
+    memory_region_add_subregion_overlap(dest, dport_base_addr, mr, priority);
+    MemoryRegion *mr_apb = g_new(MemoryRegion, 1);
+    char *name = g_strdup_printf("mr-apb-0x%08x", (uint32_t)dport_base_addr);
+    memory_region_init_alias(mr_apb, OBJECT(dev), name, mr, 0, memory_region_size(mr));
+    memory_region_add_subregion_overlap(dest,
+                                        dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE,
+                                        mr_apb, priority);
+    g_free(name);
+}
+
 static void esp32_soc_add_unimp_device(MemoryRegion *dest, const char* name, hwaddr dport_base_addr, size_t size)
 {
     create_unimplemented_device(name, dport_base_addr, size);
     char * name_apb = g_strdup_printf("%s-apb", name);
     create_unimplemented_device(name_apb, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, size);
+    g_free(name_apb);
+}
+
+static void esp32_soc_add_unimp_default_device(MemoryRegion *dest, const char *name,
+                                              hwaddr dport_base_addr, size_t size,
+                                              uint64_t default_value)
+{
+    create_unimplemented_default_device(name, dport_base_addr, size, default_value);
+    char *name_apb = g_strdup_printf("%s-apb", name);
+    create_unimplemented_default_device(name_apb,
+                                        dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE,
+                                        size, default_value);
     g_free(name_apb);
 }
 
@@ -425,6 +457,9 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     qdev_realize(DEVICE(&s->sha), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->sha, DR_REG_SHA_BASE);
 
+    qdev_realize(DEVICE(&s->unknown), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device_prio(sys_mem, &s->unknown, 0x3ff00000, -1001);
+
     qdev_realize(DEVICE(&s->aes), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->aes, DR_REG_AES_BASE);
 
@@ -549,11 +584,31 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     esp32_soc_add_periph_device(sys_mem, &s->rgb, DR_REG_FRAMEBUF_BASE);
     memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
 
+    /* Wi‑Fi / PHY blocks (needed for ESP-IDF Wi‑Fi bring-up) */
+    qdev_realize(DEVICE(&s->ana), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->ana, DR_REG_ANA_BASE);
+
+    qdev_realize(DEVICE(&s->phya), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->phya, DR_REG_PHYA_BASE);
+
+    qdev_realize(DEVICE(&s->fe), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->fe, DR_REG_FE_BASE);
+
+    qdev_realize(DEVICE(&s->wifi), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->wifi, DR_REG_WIFI_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->wifi), 0,
+                       qdev_get_gpio_in(intmatrix_dev, ETS_WIFI_MAC_INTR_SOURCE));
+
+    esp32_soc_add_unimp_default_device(sys_mem, "esp32.fe2", DR_REG_FE2_BASE, 0x1000, 0xffffffff);
+    esp32_soc_add_unimp_default_device(sys_mem, "esp32.chipv7_phy", DR_REG_PHY_BASE, 0x1000, 0xffffffff);
+    esp32_soc_add_unimp_default_device(sys_mem, "esp32.chipv7_phyb", DR_REG_WDEV_BASE, 0x1000, 0);
+    esp32_soc_add_unimp_default_device(sys_mem, "esp32.unknown_wifi", DR_REG_NRX_BASE, 0x1000, 0xffffffff);
+    esp32_soc_add_unimp_default_device(sys_mem, "esp32.unknown_wifi1", DR_REG_BB_BASE, 0x1000, 0xffffffff);
+
     /* Map some register blocks as a simple regfile (read-back storage) instead of
      * an unimplemented device. Some firmware expects read-back of configuration
      * writes during bring-up.
      */
-    esp32_soc_add_regfile(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_regfile(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
     esp32_soc_add_regfile(sys_mem, "esp32.sens", DR_REG_SENS_BASE, 0x400);
     esp32_soc_add_regfile(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
@@ -658,6 +713,12 @@ static void esp32_soc_init(Object *obj)
     object_initialize_child(obj, "ledc", &s->ledc, TYPE_ESP32_LEDC);
 
     object_initialize_child(obj, "rsa", &s->rsa, TYPE_ESP32_RSA);
+
+    object_initialize_child(obj, "unknown", &s->unknown, TYPE_ESP32_UNKNOWN);
+    object_initialize_child(obj, "ana", &s->ana, TYPE_ESP32_ANA);
+    object_initialize_child(obj, "wifi", &s->wifi, TYPE_ESP32_WIFI);
+    object_initialize_child(obj, "phya", &s->phya, TYPE_ESP32_PHYA);
+    object_initialize_child(obj, "fe", &s->fe, TYPE_ESP32_FE);
 
     object_initialize_child(obj, "efuse", &s->efuse, TYPE_ESP32_EFUSE);
 

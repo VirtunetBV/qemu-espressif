@@ -4,7 +4,7 @@ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
 system_ss.add(when: 'CONFIG_ISA_DEBUG', if_true: files('debugexit.c'))
 system_ss.add(when: 'CONFIG_ISA_TESTDEV', if_true: files('pc-testdev.c'))
 system_ss.add(when: 'CONFIG_PCI_TESTDEV', if_true: files('pci-testdev.c'))
-system_ss.add(when: 'CONFIG_UNIMP', if_true: files('unimp.c'))
+system_ss.add(when: 'CONFIG_UNIMP', if_true: files('unimp.c', 'unimp-default.c'))
 system_ss.add(when: 'CONFIG_EMPTY_SLOT', if_true: files('empty_slot.c'))
 system_ss.add(when: 'CONFIG_LED', if_true: files('led.c'))
 system_ss.add(when: 'CONFIG_PVPANIC_COMMON', if_true: files('pvpanic.c'))
@@ -145,6 +145,13 @@ system_ss.add(when: 'CONFIG_XTENSA_ESP32', if_true: files(
   'esp32_aes.c',
   'esp32_ledc.c',
   'esp32_flash_enc.c',
+  'esp32_unknown.c',
+  'esp32_ana.c',
+  'esp32_wifi.c',
+  'esp32_wifi_ap.c',
+  'esp32_wlan_packet.c',
+  'esp32_phya.c',
+  'esp32_fe.c',
   'ssi_psram.c'
 ))
 
