@@ -34,12 +34,29 @@
 #include "esp32_wlan.h"
 #include "esp32_wlan_packet.h"
 
-// the frame checksum isn't used so just put zero in there.
+static uint32_t crc32_ieee(const uint8_t *buf, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (int bit = 0; bit < 8; bit++) {
+            if (crc & 1u) {
+                crc = (crc >> 1) ^ 0xEDB88320u;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
 void insertCRC(mac80211_frame *frame) {
-    unsigned long crc;
     unsigned char *fcs = (unsigned char *)frame;
-    crc = 0;
-    memcpy(fcs+frame->frame_length, &crc, 4);
+    uint32_t crc = crc32_ieee((const uint8_t *)frame, frame->frame_length);
+    fcs[frame->frame_length + 0] = (uint8_t)(crc & 0xffu);
+    fcs[frame->frame_length + 1] = (uint8_t)((crc >> 8) & 0xffu);
+    fcs[frame->frame_length + 2] = (uint8_t)((crc >> 16) & 0xffu);
+    fcs[frame->frame_length + 3] = (uint8_t)((crc >> 24) & 0xffu);
     frame->frame_length += 4;
 }
 

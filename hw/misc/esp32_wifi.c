@@ -29,7 +29,7 @@ static uint64_t esp32_wifi_read(void *opaque, hwaddr addr, unsigned int size)
 
     switch(addr) {
         case A_WIFI_DMA_IN_STATUS:
-            r=0;
+            r = s->mem[addr / 4];
             break;
         case A_WIFI_DMA_INT_STATUS:
         case A_WIFI_DMA_INT_CLR:
@@ -59,6 +59,10 @@ static void esp32_wifi_write(void *opaque, hwaddr addr, uint64_t value, unsigned
     }
 
     switch (addr) {
+        case A_WIFI_DMA_IN_STATUS:
+            /* W1C style: clear written bits */
+            s->mem[addr / 4] &= ~(uint32_t)value;
+            return;
         case A_WIFI_DMA_INLINK:
             s->dma_inlink_address = value;
             break;
@@ -91,13 +95,27 @@ static int match_mac_address(uint8_t *a1,uint8_t *a2) {
     return 0;
 }
 
+static void esp32_wifi_get_mac_from_regs(Esp32WifiState *s, hwaddr lo_reg, hwaddr hi_reg, uint8_t out[6])
+{
+    const uint32_t lo = s->mem[lo_reg / 4];
+    const uint32_t hi = s->mem[hi_reg / 4];
+
+    out[0] = (uint8_t)(lo & 0xffu);
+    out[1] = (uint8_t)((lo >> 8) & 0xffu);
+    out[2] = (uint8_t)((lo >> 16) & 0xffu);
+    out[3] = (uint8_t)((lo >> 24) & 0xffu);
+    out[4] = (uint8_t)(hi & 0xffu);
+    out[5] = (uint8_t)((hi >> 8) & 0xffu);
+}
+
 // frame from QEMU to ESP32
 void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame, int length, int signal_strength) {
 
     if(s->dma_inlink_address == 0) {
         return;
     }
-    size_t header_len = 28 + (size_t)length;
+    const size_t rx_ctrl_len = sizeof(wifi_pkt_rx_ctrl_t);
+    size_t header_len = rx_ctrl_len + (size_t)length;
     uint8_t *header = g_malloc(header_len);
     wifi_pkt_rx_ctrl_t *pkt=(wifi_pkt_rx_ctrl_t *)header;
     *pkt=(wifi_pkt_rx_ctrl_t){
@@ -112,26 +130,41 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame, int length, int s
     };
     // These 4 bits are set if the mac addresses previously stored at 0x40 and 0x48
     // match the destination or bssid addresses in the frame
-    if(match_mac_address(frame->receiver_address,(uint8_t *)s->mem+0x40))
-        pkt->damatch0=1;
-    if(match_mac_address(frame->receiver_address,(uint8_t *)s->mem+0x48))
-        pkt->damatch1=1;
-    if(match_mac_address(frame->address_3,(uint8_t *)s->mem+0x40))
-        pkt->bssidmatch0=1;
-    if(match_mac_address(frame->address_3,(uint8_t *)s->mem+0x48))
-        pkt->bssidmatch1=1;
+    uint8_t addr0[6];
+    uint8_t addr1[6];
+    esp32_wifi_get_mac_from_regs(s, 0x40, 0x44, addr0);
+    esp32_wifi_get_mac_from_regs(s, 0x48, 0x4c, addr1);
+
+    if (match_mac_address(frame->receiver_address, addr0)) {
+        pkt->damatch0 = 1;
+    }
+    if (match_mac_address(frame->receiver_address, addr1)) {
+        pkt->damatch1 = 1;
+    }
+    if (match_mac_address(frame->address_3, addr0)) {
+        pkt->bssidmatch0 = 1;
+    }
+    if (match_mac_address(frame->address_3, addr1)) {
+        pkt->bssidmatch1 = 1;
+    }
     //printf("...%x %x\n",header[3],frame->receiver_address[0]);
 
-    memcpy(header+28, frame, length);
-    length += 28;
+    memcpy(header + rx_ctrl_len, frame, length);
+    length += (int)rx_ctrl_len;
     // do a DMA transfer from the hardware to esp32 memory
     dma_list_item item;
-    address_space_read(&address_space_memory, s->dma_inlink_address, MEMTXATTRS_UNSPECIFIED, &item, 12);
+    const uint32_t desc_addr = (uint32_t)s->dma_inlink_address;
+    address_space_read(&address_space_memory, desc_addr, MEMTXATTRS_UNSPECIFIED, &item, 12);
     address_space_write(&address_space_memory, item.address, MEMTXATTRS_UNSPECIFIED, header, length);
     item.length=length;
     item.eof=1;
-    address_space_write(&address_space_memory, s->dma_inlink_address, MEMTXATTRS_UNSPECIFIED,&item,4);
+    item.owner = 0;
+    address_space_write(&address_space_memory, desc_addr, MEMTXATTRS_UNSPECIFIED,&item,4);
     s->dma_inlink_address=item.next;
+    s->mem[A_WIFI_DMA_IN_STATUS / 4] |= 0x1; /* RX EOF */
+    /* Common ESP32 DMA status regs observed during RX handling. */
+    s->mem[0x8c / 4] = desc_addr; /* inlink_dscr */
+    s->mem[0x90 / 4] = desc_addr; /* in_suc_eof_des_addr */
     set_interrupt(s, 0x1000024);
     g_free(header);
 }

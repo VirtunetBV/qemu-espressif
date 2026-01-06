@@ -127,6 +127,13 @@ static void infoprint(struct mac80211_frame *frame) {
     }
 }
 
+static void macprint_compact(const uint8_t *p, const char *name)
+{
+    printf("%s%02x:%02x:%02x:%02x:%02x:%02x\n",
+           name,
+           p[0], p[1], p[2], p[3], p[4], p[5]);
+}
+
 void Esp32_WLAN_insert_frame(Esp32WifiState *s, struct mac80211_frame *frame)
 {
     struct mac80211_frame *i_frame;
@@ -233,7 +240,9 @@ void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s) {
     s->ap_state = Esp32_WLAN__STATE_NOT_AUTHENTICATED;
     s->beacon_ap=0;
     memcpy(s->ap_macaddr,(uint8_t[]){0x01,0x13,0x46,0xbf,0x31,0x50},sizeof(s->ap_macaddr));
-    memcpy(s->macaddr,(uint8_t[]){0x10,0x01,0x00,0xc4,0x0a,0x24},sizeof(s->macaddr));
+    /* Keep the emulated NIC MAC aligned with the ESP32's factory eFuse MAC.
+     * See tools/flash/gen_qemu_efuse_esp32.py (default: 02:00:00:00:00:01). */
+    memcpy(s->macaddr,(uint8_t[]){0x02,0x00,0x00,0x00,0x00,0x01},sizeof(s->macaddr));
 
     s->inject_timer_running = 0;
     s->inject_sequence_number = 0;
@@ -248,7 +257,7 @@ void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s) {
     // it when necessary...
     s->inject_timer = timer_new_ns(QEMU_CLOCK_REALTIME, Esp32_WLAN_inject_timer, s);
 
-    s->nic = qemu_new_nic(&net_info, &s->conf, object_get_typename(OBJECT(s)), dev->id, NULL, s);
+    s->nic = qemu_new_nic(&net_info, &s->conf, object_get_typename(OBJECT(s)), dev->id, &dev->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->macaddr);
 }
 
@@ -281,6 +290,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             frame->frame_control.from_ds,
             s->ap_state
         );
+        macprint_compact(frame->receiver_address, "QEMU:  ra=");
+        macprint_compact(frame->transmitter_address, "QEMU:  ta=");
+        macprint_compact(frame->address_3, "QEMU:  a3=");
     }
     infoprint(frame);
     access_point_info *ap_info=0;
@@ -424,18 +436,36 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             // in case of to_ds = 1 and from_ds = 0, the third address is the destination address
             memcpy(&ethernet_frame[0], frame->address_3, 6);
 
-            ethernet_frame_size = frame->frame_length - 22;
-
-            // limit data to max length of ethernet frame
-            if (ethernet_frame_size > (sizeof(ethernet_frame) - 14)) {
-                ethernet_frame_size = (sizeof(ethernet_frame) - 14);
+            if (frame->frame_length < 22 || frame->frame_length < 22 + 14) {
+                return;
             }
 
-            // set ethernet data
-            memcpy(&ethernet_frame[14], &frame->data_and_fcs[8], ethernet_frame_size);
+            ethernet_frame_size = frame->frame_length - 22; /* 14 + payload_len */
+            size_t payload_len = ethernet_frame_size - 14;
 
-            // send frame
-            qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
+            /* limit payload to max length of ethernet frame */
+            if (payload_len > (sizeof(ethernet_frame) - 14)) {
+                payload_len = (sizeof(ethernet_frame) - 14);
+            }
+
+            /* set ethernet data (skip LLC/SNAP header in 802.11 payload) */
+            memcpy(&ethernet_frame[14], &frame->data_and_fcs[8], payload_len);
+
+            /* send frame */
+            NetClientState *queue = qemu_get_queue(s->nic);
+            if (!queue) {
+                if (esp32_wifi_debug_enabled()) {
+                    printf("QEMU: net queue is NULL, dropping frame\n");
+                }
+                return;
+            }
+            if (esp32_wifi_debug_enabled()) {
+                printf("QEMU: forwarding ethernet frame ethertype=%02x%02x len=%zu\n",
+                       ethernet_frame[12],
+                       ethernet_frame[13],
+                       14 + payload_len);
+            }
+            qemu_send_packet(queue, ethernet_frame, 14 + payload_len);
         } else if (s->ap_state == Esp32_WLAN__STATE_STA_ASSOCIATED) {
             if (esp32_wifi_debug_enabled()) {
                 printf("QEMU: STA DATA, NOT IMPLEMENTED YET\n");
