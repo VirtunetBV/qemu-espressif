@@ -222,7 +222,8 @@ static const FlashPartInfo known_devices[] = {
     { INFO("is25lp016d",  0x9d6015,      0,  64 << 10,  32, ER_4K) },
     { INFO("is25lp032",   0x9d6016,      0,  64 << 10,  64, ER_4K) },
     { INFO("is25lp064",   0x9d6017,      0,  64 << 10, 128, ER_4K) },
-    { INFO("is25lp128",   0x9d6018,      0,  64 << 10, 256, ER_4K) },
+    { INFO("is25lp128",   0x9d6018,      0,  64 << 10, 256, ER_4K),
+      .sfdp_read = m25p80_sfdp_is25lp128 },
     { INFO("is25lp256",   0x9d6019,      0,  64 << 10, 512, ER_4K) },
     { INFO("is25wp032",   0x9d7016,      0,  64 << 10,  64, ER_4K) },
     { INFO("is25wp064",   0x9d7017,      0,  64 << 10, 128, ER_4K) },
@@ -874,9 +875,16 @@ static void complete_collecting_data(Flash *s)
                               "M25P80: Invalid read id address\n");
             }
         } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "M25P80: Read id (command 0x90/0xAB) is not supported"
-                          " by device\n");
+            if (s->cur_addr != 0) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "M25P80: Invalid read id address\n");
+            }
+            s->data[0] = s->pi->id[0];
+            s->data[1] = (s->pi->id_len >= 3) ? s->pi->id[2] : 0;
+            s->pos = 0;
+            s->len = 2;
+            s->data_read_loop = true;
+            s->state = STATE_READING_DATA;
         }
         break;
 
