@@ -39,6 +39,33 @@
 #include "exec/memory.h"
 #endif
 
+#ifndef CONFIG_USER_ONLY
+static uint64_t xtensa_er_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return 0;
+}
+
+static void xtensa_er_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+{
+}
+
+static const MemoryRegionOps xtensa_er_ops = {
+    .read = xtensa_er_read,
+    .write = xtensa_er_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+    .impl = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false,
+    },
+};
+#endif
+
 
 static void xtensa_cpu_set_pc(CPUState *cs, vaddr value)
 {
@@ -191,7 +218,7 @@ static void xtensa_cpu_initfn(Object *obj)
 #ifndef CONFIG_USER_ONLY
     env->address_space_er = g_malloc(sizeof(*env->address_space_er));
     env->system_er = g_malloc(sizeof(*env->system_er));
-    memory_region_init_io(env->system_er, obj, NULL, env, "er",
+    memory_region_init_io(env->system_er, obj, &xtensa_er_ops, env, "er",
                           UINT64_C(0x100000000));
     address_space_init(env->address_space_er, env->system_er, "ER");
 

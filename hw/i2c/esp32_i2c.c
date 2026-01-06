@@ -191,6 +191,10 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
                     uint8_t addr = data >> 1;
                     uint8_t is_read = data & 0x1;
                     if (i2c_start_transfer(s->bus, addr, is_read) != 0) {
+                        qemu_log_mask(LOG_GUEST_ERROR,
+                                      "esp32_i2c: NACK addr=0x%02x read=%u\n",
+                                      addr,
+                                      is_read);
                         /* NACK */
                         if (FIELD_EX32(cmd, I2C_CMD, ACK_CHECK_EN)
                             && FIELD_EX32(cmd, I2C_CMD, ACK_EXP) == 0) {

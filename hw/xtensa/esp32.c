@@ -549,40 +549,24 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     esp32_soc_add_periph_device(sys_mem, &s->rgb, DR_REG_FRAMEBUF_BASE);
     memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
 
-    esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
-    /* For now, map these register blocks as a simple regfile (read-back storage)
-     * instead of an unimplemented device. Some firmware expects read-back of
-     * GPIO/IOMUX configuration writes during bring-up.
+    /* Map some register blocks as a simple regfile (read-back storage) instead of
+     * an unimplemented device. Some firmware expects read-back of configuration
+     * writes during bring-up.
      */
+    esp32_soc_add_regfile(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
     esp32_soc_add_regfile(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
     esp32_soc_add_regfile(sys_mem, "esp32.sens", DR_REG_SENS_BASE, 0x400);
     esp32_soc_add_regfile(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
+    esp32_soc_add_regfile(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
+    esp32_soc_add_regfile(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
+    esp32_soc_add_regfile(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.rmt", DR_REG_RMT_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.pcnt", DR_REG_PCNT_BASE, 0x1000);
 
-    /* Emulation of a fake register used to mark that the chip is run via QEMU */
-    MemoryRegion *apbctrl_mem = g_new(MemoryRegion, 1);
-    memory_region_init_ram(apbctrl_mem, NULL, "esp32.apbctrl_date_reg", 8 /* bytes */, &error_fatal);
-
-    /* This register is not used in the real hardware (hardwired to 0), but is still accesible, reading
-     * it won't trigger an exception, so we can override it */
-    const hwaddr apb_ctrl_emu_reg = DR_REG_APB_CTRL_BASE + 0x78;
-    /* Store "QEMU" as a 32-bit value */
-    const uint32_t apb_ctrl_emu_val = 0x51454d55;
-    /* The memory region must be added before writing to the CPU memory */
-    memory_region_add_subregion(sys_mem, apb_ctrl_emu_reg, apbctrl_mem);
-    cpu_physical_memory_write(apb_ctrl_emu_reg, &apb_ctrl_emu_val, 4);
-
-    /* Emulation of APB_CTRL_DATE_REG, needed for ECO3 revision detection.
-     * This is a small hack to avoid creating a whole new device just to emulate one
-     * register.
-     */
+    /* Emulation of APB_CTRL_DATE_REG, needed for ECO3 revision detection. */
     const hwaddr apb_ctrl_date_reg = DR_REG_APB_CTRL_BASE + 0x7c;
     uint32_t apb_ctrl_date_reg_val = 0x16042000 | 0x80000000;  /* MSB indicates ECO3 silicon revision */
     cpu_physical_memory_write(apb_ctrl_date_reg, &apb_ctrl_date_reg_val, 4);
