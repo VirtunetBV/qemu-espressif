@@ -25,9 +25,23 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 {
     Esp32GpioState *s = ESP32_GPIO(opaque);
     uint64_t r = 0;
+
+    if ((addr % sizeof(uint32_t)) != 0 || addr >= ESP32_GPIO_MEM_SIZE) {
+        return 0;
+    }
+
+    uint32_t *reg = &s->mem[addr / sizeof(uint32_t)];
+    r = *reg;
     switch (addr) {
     case A_GPIO_STRAP:
         r = s->strap_mode;
+        break;
+    case A_GPIO_IN:
+        /* Basic model: mirror output level back as input level. */
+        r = s->mem[A_GPIO_OUT / sizeof(uint32_t)];
+        break;
+    case A_GPIO_IN1:
+        r = s->mem[A_GPIO_OUT1 / sizeof(uint32_t)];
         break;
 
     default:
@@ -39,6 +53,73 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
 static void esp32_gpio_write(void *opaque, hwaddr addr,
                        uint64_t value, unsigned int size)
 {
+    Esp32GpioState *s = ESP32_GPIO(opaque);
+    if ((addr % sizeof(uint32_t)) != 0 || addr >= ESP32_GPIO_MEM_SIZE) {
+        return;
+    }
+
+    uint32_t v = (uint32_t)value;
+    switch (addr) {
+    case A_GPIO_OUT:
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_OUT_W1TS:
+        s->mem[A_GPIO_OUT / sizeof(uint32_t)] |= v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_OUT_W1TC:
+        s->mem[A_GPIO_OUT / sizeof(uint32_t)] &= ~v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_OUT1:
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_OUT1_W1TS:
+        s->mem[A_GPIO_OUT1 / sizeof(uint32_t)] |= v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_OUT1_W1TC:
+        s->mem[A_GPIO_OUT1 / sizeof(uint32_t)] &= ~v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE:
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE_W1TS:
+        s->mem[A_GPIO_ENABLE / sizeof(uint32_t)] |= v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE_W1TC:
+        s->mem[A_GPIO_ENABLE / sizeof(uint32_t)] &= ~v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE1:
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE1_W1TS:
+        s->mem[A_GPIO_ENABLE1 / sizeof(uint32_t)] |= v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_ENABLE1_W1TC:
+        s->mem[A_GPIO_ENABLE1 / sizeof(uint32_t)] &= ~v;
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    case A_GPIO_STATUS_W1TS:
+        s->mem[A_GPIO_STATUS / sizeof(uint32_t)] |= v;
+        break;
+    case A_GPIO_STATUS_W1TC:
+        s->mem[A_GPIO_STATUS / sizeof(uint32_t)] &= ~v;
+        break;
+    case A_GPIO_STATUS1_W1TS:
+        s->mem[A_GPIO_STATUS1 / sizeof(uint32_t)] |= v;
+        break;
+    case A_GPIO_STATUS1_W1TC:
+        s->mem[A_GPIO_STATUS1 / sizeof(uint32_t)] &= ~v;
+        break;
+    default:
+        s->mem[addr / sizeof(uint32_t)] = v;
+        break;
+    }
 }
 
 static const MemoryRegionOps uart_ops = {
@@ -49,6 +130,8 @@ static const MemoryRegionOps uart_ops = {
 
 static void esp32_gpio_reset_hold(Object *obj, ResetType type)
 {
+    Esp32GpioState *s = ESP32_GPIO(obj);
+    memset(s->mem, 0, sizeof(s->mem));
 }
 
 static void esp32_gpio_realize(DeviceState *dev, Error **errp)
@@ -62,6 +145,7 @@ static void esp32_gpio_init(Object *obj)
 
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+    memset(s->mem, 0, sizeof(s->mem));
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
                           TYPE_ESP32_GPIO, 0x1000);
