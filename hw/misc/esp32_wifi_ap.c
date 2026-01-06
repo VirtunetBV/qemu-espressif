@@ -38,7 +38,6 @@
 // 50ms between beacons
 #define BEACON_TIME 50000000
 #define INTER_FRAME_TIME 5000000
-#define DEBUG 0
 #define DEBUG_DUMPFRAMES 0
 
 // channel 12, 13 and 14 aren't scanned with probe requests, but by listening to beacons
@@ -51,6 +50,15 @@ access_point_info access_points[]={
 
 int nb_aps=sizeof(access_points)/sizeof(access_point_info);
 
+static bool esp32_wifi_debug_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = getenv("ESP32_WIFI_DEBUG") != NULL;
+    }
+    return enabled;
+}
+
 static void Esp32_WLAN_beacon_timer(void *opaque)
 {
     struct mac80211_frame *frame;
@@ -59,7 +67,7 @@ static void Esp32_WLAN_beacon_timer(void *opaque)
     // only send a beacon if we are an access point
     if(s->ap_state!=Esp32_WLAN__STATE_STA_ASSOCIATED) {
         if (access_points[s->beacon_ap].channel==esp32_wifi_channel) {
-            if (DEBUG) {
+            if (esp32_wifi_debug_enabled()) {
                 printf("QEMU: sending beacon for AP %s\n", access_points[s->beacon_ap].ssid);
             }
             memcpy(s->ap_macaddr,access_points[s->beacon_ap].mac_address,6);
@@ -124,7 +132,9 @@ void Esp32_WLAN_insert_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     struct mac80211_frame *i_frame;
 
     insertCRC(frame);
-    if(DEBUG) printf("QEMU: sent frame (qemu AP -> ESP32) type=%d subtype=%d\n",frame->frame_control.type,frame->frame_control.sub_type);
+    if (esp32_wifi_debug_enabled()) {
+        printf("QEMU: sent frame (qemu AP -> ESP32) type=%d subtype=%d\n", frame->frame_control.type, frame->frame_control.sub_type);
+    }
     infoprint(frame);
     s->inject_queue_size++;
     i_frame = s->inject_queue;
@@ -188,7 +198,7 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
     if (frame) {
         /* send message to ESP32 AP */
         if(s->ap_state == Esp32_WLAN__STATE_STA_ASSOCIATED) {
-            if (DEBUG) {
+            if (esp32_wifi_debug_enabled()) {
                 printf("QEMU: Esp32_WLAN_create_data_packet not yet implemented for STA!\n");
             }
             frame->frame_control.to_ds = 1;
@@ -261,13 +271,24 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     char ssid[64];
     unsigned long ethernet_frame_size;
     unsigned char ethernet_frame[1518] = {0};
-    if(DEBUG)
-        printf("QEMU: received frame (esp32 -> qemu) type=%d subtype=%d chan=%d to_ds=%d from_ds=%d state=%d\n",frame->frame_control.type, frame->frame_control.sub_type, esp32_wifi_channel, frame->frame_control.to_ds, frame->frame_control.from_ds, s->ap_state);
+    if (esp32_wifi_debug_enabled()) {
+        printf(
+            "QEMU: received frame (esp32 -> qemu) type=%d subtype=%d chan=%d to_ds=%d from_ds=%d state=%d\n",
+            frame->frame_control.type,
+            frame->frame_control.sub_type,
+            esp32_wifi_channel,
+            frame->frame_control.to_ds,
+            frame->frame_control.from_ds,
+            s->ap_state
+        );
+    }
     infoprint(frame);
     access_point_info *ap_info=0;
     for (int i=0;i<nb_aps;i++) {
         if (access_points[i].channel == esp32_wifi_channel) {
-            if (DEBUG) printf("QEMU: matching ap found: %s\n", access_points[i].ssid);
+            if (esp32_wifi_debug_enabled()) {
+                printf("QEMU: matching ap found: %s\n", access_points[i].ssid);
+            }
             ap_info=&access_points[i];
         }
     }
@@ -277,7 +298,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             case IEEE80211_TYPE_MGT_SUBTYPE_BEACON:
                 if(s->ap_state==Esp32_WLAN__STATE_NOT_AUTHENTICATED || s->ap_state==Esp32_WLAN__STATE_AUTHENTICATED) {
                     strncpy(ssid,(char *)frame->data_and_fcs+14,frame->data_and_fcs[13]);
-                    if(DEBUG) printf("QEMU: beacon from %s\n",ssid);
+                    if (esp32_wifi_debug_enabled()) {
+                        printf("QEMU: beacon from %s\n", ssid);
+                    }
                     dummy_ap.ssid=ssid;
                     s->ap_state=Esp32_WLAN__STATE_STA_NOT_AUTHENTICATED;
                     send_single_frame(s,frame,Esp32_WLAN_create_probe_request(&dummy_ap));
@@ -286,14 +309,18 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             case IEEE80211_TYPE_MGT_SUBTYPE_PROBE_RESP:
                 ap_info=&dummy_ap;
                 strncpy(ssid,(char *)frame->data_and_fcs+14,frame->data_and_fcs[13]);
-                if(DEBUG) printf("QEMU: probe resp from %s\n",ssid);
+                if (esp32_wifi_debug_enabled()) {
+                    printf("QEMU: probe resp from %s\n", ssid);
+                }
                 dummy_ap.ssid=ssid;
                 s->ap_state=Esp32_WLAN__STATE_STA_NOT_AUTHENTICATED;
                 send_single_frame(s,frame,Esp32_WLAN_create_deauthentication());
                 send_single_frame(s,frame,Esp32_WLAN_create_authentication_request());
                 break;
             case IEEE80211_TYPE_MGT_SUBTYPE_ASSOCIATION_RESP:
-                if(DEBUG) printf("QEMU: assoc resp\n");
+                if (esp32_wifi_debug_enabled()) {
+                    printf("QEMU: assoc resp\n");
+                }
                 mac80211_frame *frame1=Esp32_WLAN_create_dhcp_discover();
                 memcpy(frame1->address_3,BROADCAST,6);
                 memcpy(frame1->transmitter_address,frame->receiver_address,6);
@@ -360,7 +387,7 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     if ((frame->frame_control.type == IEEE80211_TYPE_DATA) &&
         (frame->frame_control.sub_type == IEEE80211_TYPE_DATA_SUBTYPE_DATA)) {
         if(s->ap_state == Esp32_WLAN__STATE_STA_DHCP) {
-            if (DEBUG) {
+            if (esp32_wifi_debug_enabled()) {
                 printf("QEMU: STA DHCP not implemented yet\n");
             }
             dhcp_request_t *req=(dhcp_request_t *)&frame->data_and_fcs[8];
@@ -410,7 +437,7 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             // send frame
             qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
         } else if (s->ap_state == Esp32_WLAN__STATE_STA_ASSOCIATED) {
-            if (DEBUG) {
+            if (esp32_wifi_debug_enabled()) {
                 printf("QEMU: STA DATA, NOT IMPLEMENTED YET\n");
             }
         }

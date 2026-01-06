@@ -37,11 +37,18 @@ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
         r = s->strap_mode;
         break;
     case A_GPIO_IN:
-        /* Basic model: mirror output level back as input level. */
-        r = s->mem[A_GPIO_OUT / sizeof(uint32_t)];
+        /*
+         * Input reflects output level when the pin is configured as an output.
+         * Otherwise, fall back to the externally provided input level.
+         */
+        r = (s->mem[A_GPIO_OUT / sizeof(uint32_t)] &
+             s->mem[A_GPIO_ENABLE / sizeof(uint32_t)]) |
+            (s->input0 & ~s->mem[A_GPIO_ENABLE / sizeof(uint32_t)]);
         break;
     case A_GPIO_IN1:
-        r = s->mem[A_GPIO_OUT1 / sizeof(uint32_t)];
+        r = (s->mem[A_GPIO_OUT1 / sizeof(uint32_t)] &
+             s->mem[A_GPIO_ENABLE1 / sizeof(uint32_t)]) |
+            (s->input1 & ~s->mem[A_GPIO_ENABLE1 / sizeof(uint32_t)]);
         break;
 
     default:
@@ -146,6 +153,8 @@ static void esp32_gpio_init(Object *obj)
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
     memset(s->mem, 0, sizeof(s->mem));
+    s->input0 = 0xffffffff;
+    s->input1 = 0xffffffff;
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,
                           TYPE_ESP32_GPIO, 0x1000);
@@ -157,6 +166,8 @@ static Property esp32_gpio_properties[] = {
     /* The strap_mode needs to be explicitly set in the instance init, thus, set
      * the default value to 0. */
     DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, 0),
+    DEFINE_PROP_UINT32("input0", Esp32GpioState, input0, 0xffffffff),
+    DEFINE_PROP_UINT32("input1", Esp32GpioState, input1, 0xffffffff),
     DEFINE_PROP_END_OF_LIST(),
 };
 

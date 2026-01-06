@@ -12,7 +12,14 @@
 #include "esp32_wlan_packet.h"
 #include "hw/qdev-properties.h"
 
-#define DEBUG 0
+static bool esp32_wifi_debug_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = getenv("ESP32_WIFI_DEBUG") != NULL;
+    }
+    return enabled;
+}
 
 static uint64_t esp32_wifi_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -34,7 +41,9 @@ static uint64_t esp32_wifi_read(void *opaque, hwaddr addr, unsigned int size)
             break;
     }
 
-    if(DEBUG) printf("esp32_wifi_read %lx=%x\n",addr,r);
+    if (esp32_wifi_debug_enabled()) {
+        printf("esp32_wifi_read 0x%" HWADDR_PRIx " -> 0x%08" PRIx32 "\n", addr, r);
+    }
 
     return r;
 }
@@ -45,7 +54,9 @@ static void set_interrupt(Esp32WifiState *s, int e) {
 
 static void esp32_wifi_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size) {
     Esp32WifiState *s = ESP32_WIFI(opaque);
-    if(DEBUG) printf("esp32_wifi_write %lx=%lx\n",addr, value);
+    if (esp32_wifi_debug_enabled()) {
+        printf("esp32_wifi_write 0x%" HWADDR_PRIx " <- 0x%" PRIx64 "\n", addr, value);
+    }
 
     switch (addr) {
         case A_WIFI_DMA_INLINK:
@@ -86,7 +97,8 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame, int length, int s
     if(s->dma_inlink_address == 0) {
         return;
     }
-    uint8_t header[28+length];
+    size_t header_len = 28 + (size_t)length;
+    uint8_t *header = g_malloc(header_len);
     wifi_pkt_rx_ctrl_t *pkt=(wifi_pkt_rx_ctrl_t *)header;
     *pkt=(wifi_pkt_rx_ctrl_t){
         .rssi=(signal_strength+(rand()%10)+96),
@@ -121,6 +133,7 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame, int length, int s
     address_space_write(&address_space_memory, s->dma_inlink_address, MEMTXATTRS_UNSPECIFIED,&item,4);
     s->dma_inlink_address=item.next;
     set_interrupt(s, 0x1000024);
+    g_free(header);
 }
 
 static const MemoryRegionOps esp32_wifi_ops = {

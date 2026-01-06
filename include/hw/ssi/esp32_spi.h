@@ -18,7 +18,9 @@ typedef struct Esp32SpiState {
     qemu_irq cs_gpio[ESP32_SPI_CS_COUNT];
     int num_cs;
     SSIBus *spi;
+    uint32_t id;
 
+    uint32_t cmd_reg;
     uint32_t addr_reg;
     uint32_t ctrl_reg;
     uint32_t status_reg;
@@ -30,6 +32,7 @@ typedef struct Esp32SpiState {
     uint32_t mosi_dlen_reg;
     uint32_t miso_dlen_reg;
     uint32_t pin_reg;
+    uint32_t slave_reg;
     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
 } Esp32SpiState;
 
@@ -90,5 +93,4 @@ REG32(SPI_EXT0, 0xF0)
 REG32(SPI_EXT1, 0xF4)
 REG32(SPI_EXT2, 0xF8)
 REG32(SPI_EXT3, 0xFC)
-
 

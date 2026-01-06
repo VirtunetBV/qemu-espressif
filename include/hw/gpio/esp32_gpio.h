@@ -45,6 +45,16 @@ typedef struct Esp32GpioState {
     MemoryRegion iomem;
     qemu_irq irq;
     uint32_t strap_mode;
+    /*
+     * External input levels as seen by GPIO_IN / GPIO_IN1 when the pin is not
+     * configured as an output (ENABLE bit = 0).
+     *
+     * Defaults to all-ones to approximate pull-ups on unconnected inputs,
+     * which is important for firmware that samples active-low buttons during
+     * startup.
+     */
+    uint32_t input0;
+    uint32_t input1;
     uint32_t mem[ESP32_GPIO_MEM_SIZE / sizeof(uint32_t)];
 } Esp32GpioState;
 

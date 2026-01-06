@@ -533,6 +533,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
         const hwaddr spi_base[] = {
             DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
         };
+        s->spi[i].id = i;
         qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
 
         esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
@@ -551,6 +552,19 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
 
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->i2c[i]), 0,
                            qdev_get_gpio_in(intmatrix_dev, ETS_I2C_EXT0_INTR_SOURCE + i));
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const hwaddr i2s_base[] = {
+            DR_REG_I2S_BASE, DR_REG_I2S1_BASE
+        };
+        qdev_prop_set_uint32(DEVICE(&s->i2s[i]), "id", i);
+        qdev_realize(DEVICE(&s->i2s[i]), &s->periph_bus, &error_fatal);
+
+        esp32_soc_add_periph_device(sys_mem, &s->i2s[i], i2s_base[i]);
+
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->i2s[i]), 0,
+                           qdev_get_gpio_in(intmatrix_dev, ETS_I2S0_INTR_SOURCE + i));
     }
 
     /* TWAI model passes intmatrix IRQs to the SJA1000 controller model
@@ -595,6 +609,15 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     qdev_realize(DEVICE(&s->ana), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->ana, DR_REG_ANA_BASE);
 
+    /* Minimal SENS emulation to satisfy ADC calibration/measurement flows. */
+    qdev_realize(DEVICE(&s->sens), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->sens, DR_REG_SENS_BASE);
+
+    qdev_realize(DEVICE(&s->rmt), &s->periph_bus, &error_fatal);
+    esp32_soc_add_periph_device(sys_mem, &s->rmt, DR_REG_RMT_BASE);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->rmt), 0,
+                       qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
+
     qdev_realize(DEVICE(&s->phya), &s->periph_bus, &error_fatal);
     esp32_soc_add_periph_device(sys_mem, &s->phya, DR_REG_PHYA_BASE);
 
@@ -617,15 +640,11 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
      * writes during bring-up.
      */
     esp32_soc_add_regfile(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
-    esp32_soc_add_regfile(sys_mem, "esp32.sens", DR_REG_SENS_BASE, 0x400);
     esp32_soc_add_regfile(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
     esp32_soc_add_regfile(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
-    esp32_soc_add_regfile(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
-    esp32_soc_add_regfile(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rmt", DR_REG_RMT_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.pcnt", DR_REG_PCNT_BASE, 0x1000);
 
     /* Emulation of APB_CTRL_DATE_REG, needed for ECO3 revision detection. */
@@ -709,6 +728,11 @@ static void esp32_soc_init(Object *obj)
         object_initialize_child(obj, name, &s->i2c[i], TYPE_ESP32_I2C);
     }
 
+    for (int i = 0; i < 2; ++i) {
+        snprintf(name, sizeof(name), "i2s%d", i);
+        object_initialize_child(obj, name, &s->i2s[i], TYPE_ESP32_I2S);
+    }
+
     object_initialize_child(obj, "twai", &s->twai, TYPE_ESP32_TWAI);
 
     object_initialize_child(obj, "rng", &s->rng, TYPE_ESP32_RNG);
@@ -723,6 +747,8 @@ static void esp32_soc_init(Object *obj)
 
     object_initialize_child(obj, "unknown", &s->unknown, TYPE_ESP32_UNKNOWN);
     object_initialize_child(obj, "ana", &s->ana, TYPE_ESP32_ANA);
+    object_initialize_child(obj, "sens", &s->sens, TYPE_ESP32_SENS);
+    object_initialize_child(obj, "rmt", &s->rmt, TYPE_ESP32_RMT);
     object_initialize_child(obj, "wifi", &s->wifi, TYPE_ESP32_WIFI);
     object_initialize_child(obj, "phya", &s->phya, TYPE_ESP32_PHYA);
     object_initialize_child(obj, "fe", &s->fe, TYPE_ESP32_FE);
@@ -903,6 +929,16 @@ static void esp32_machine_init(MachineState *machine)
     if (machine->ram_size > 0) {
         qdev_prop_set_bit(DEVICE(&ss->dport), "has_psram", true);
     }
+
+    /* Allow wiring the built-in ESP32 Wi‑Fi device to a QEMU NIC backend.
+     *
+     * Usage example:
+     *   -nic user,model=misc.esp32_wifi
+     *
+     * We intentionally do not match the default NIC model (no model specified),
+     * to avoid stealing the first NIC from other devices.
+     */
+    (void)qemu_configure_nic_device(DEVICE(&ss->wifi), false, NULL);
 
     qdev_realize(DEVICE(ss), NULL, &error_fatal);
 

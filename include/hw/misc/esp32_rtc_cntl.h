@@ -58,6 +58,7 @@ typedef struct Esp32RtcCntlState {
     qemu_irq cpu_stall_req[ESP32_CPU_COUNT];
     qemu_irq clk_update;
     bool cpu_stall_state[ESP32_CPU_COUNT];
+    bool wdt_disable;
 
     uint32_t xtal_apb_freq;
     uint32_t pll_apb_freq;

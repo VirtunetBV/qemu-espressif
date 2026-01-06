@@ -22,6 +22,21 @@
 #include "hw/misc/esp32_flash_enc.h"
 
 
+static bool esp32_spi_debug_enabled(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        enabled = getenv("ESP32_SPI_DEBUG") != NULL;
+    }
+    return enabled;
+}
+
+static void esp32_spi_update_irq(Esp32SpiState *s)
+{
+    const bool inten = FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_INTEN);
+    const bool done = FIELD_EX32(s->slave_reg, SPI_SLAVE, TRANS_DONE);
+    qemu_set_irq(s->irq, inten && done);
+}
 
 enum {
     CMD_RES = 0xab,
@@ -48,6 +63,9 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
     Esp32SpiState *s = ESP32_SPI(opaque);
     uint64_t r = 0;
     switch (addr) {
+    case A_SPI_CMD:
+        r = s->cmd_reg;
+        break;
     case A_SPI_ADDR:
         r = s->addr_reg;
         break;
@@ -88,7 +106,7 @@ static uint64_t esp32_spi_read(void *opaque, hwaddr addr, unsigned int size)
         r = 0;
         break;
     case A_SPI_SLAVE:
-        r = BIT(R_SPI_SLAVE_TRANS_DONE_SHIFT) | BIT(R_SPI_SLAVE_TRANS_INTEN_SHIFT);
+        r = s->slave_reg;
         break;
     }
     return r;
@@ -136,7 +154,22 @@ static void esp32_spi_write(void *opaque, hwaddr addr,
         s->pin_reg = value;
         break;
     case A_SPI_CMD:
+        s->cmd_reg = value;
+
+        s->slave_reg = FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 0);
+        esp32_spi_update_irq(s);
+
         esp32_spi_do_command(s, value);
+
+        s->slave_reg = FIELD_DP32(s->slave_reg, SPI_SLAVE, TRANS_DONE, 1);
+        esp32_spi_update_irq(s);
+
+        /* Command bits are self-clearing in hardware */
+        s->cmd_reg = 0;
+        break;
+    case A_SPI_SLAVE:
+        s->slave_reg = value;
+        esp32_spi_update_irq(s);
         break;
     }
 }
@@ -202,42 +235,62 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
     Esp32SpiTransaction t = {
         .cmd_bytes = 1
     };
-    switch (cmd_reg) {
-    case R_SPI_CMD_READ_MASK:
+
+    /*
+     * Most ESP32 firmware uses SPI2/SPI3 with DMA via interrupts. We don't
+     * emulate DMA, but we do need to avoid blocking forever waiting for the
+     * trans_done interrupt. Treat SPI2/SPI3 transactions as no-op and complete
+     * immediately (IRQ + TRANS_DONE handled by the caller).
+     */
+    if (s->id >= 2) {
+        if (esp32_spi_debug_enabled() && (cmd_reg & R_SPI_CMD_USR_MASK)) {
+            printf("esp32_spi[%u]: USR cmd (no-op) user=0x%08" PRIx32 " mosi_dlen=0x%08" PRIx32 " miso_dlen=0x%08" PRIx32 "\n",
+                   s->id, s->user_reg, s->mosi_dlen_reg, s->miso_dlen_reg);
+        }
+        return;
+    }
+
+    if (cmd_reg & R_SPI_CMD_READ_MASK) {
         t.cmd = CMD_READ;
         t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
         t.addr = bswap32(s->addr_reg) >> (32 - t.addr_bytes * 8);
         t.data = &s->data_reg[0];
         t.data_rx_bytes = bitlen_to_bytes(s->miso_dlen_reg);
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_WREN_MASK:
+    if (cmd_reg & R_SPI_CMD_WREN_MASK) {
         t.cmd = CMD_WREN;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_WRDI_MASK:
+    if (cmd_reg & R_SPI_CMD_WRDI_MASK) {
         t.cmd = CMD_WRDI;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_RDID_MASK:
+    if (cmd_reg & R_SPI_CMD_RDID_MASK) {
         t.cmd = CMD_RDID;
         t.data = &s->data_reg[0];
         t.data_rx_bytes = 3;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_RDSR_MASK:
+    if (cmd_reg & R_SPI_CMD_RDSR_MASK) {
         t.cmd = CMD_RDSR;
         t.data = &s->status_reg;
         t.data_rx_bytes = 1;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_WRSR_MASK:
+    if (cmd_reg & R_SPI_CMD_WRSR_MASK) {
         t.cmd = CMD_WRSR;
         t.data = &s->status_reg;
         t.data_tx_bytes = 1;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_PP_MASK:
+    if (cmd_reg & R_SPI_CMD_PP_MASK) {
         maybe_encrypt_data(s);
         t.cmd = CMD_PP;
         t.data = &s->data_reg[0];
@@ -245,35 +298,41 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
         t.addr = bswap32(s->addr_reg) >> 8;
         t.data = &s->data_reg[0];
         t.data_tx_bytes = s->addr_reg >> 24;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_SE_MASK:
+    if (cmd_reg & R_SPI_CMD_SE_MASK) {
         t.cmd = CMD_SE;
         t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
         t.addr = bswap32(s->addr_reg) >> (32 - t.addr_bytes * 8);
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_BE_MASK:
+    if (cmd_reg & R_SPI_CMD_BE_MASK) {
         t.cmd = CMD_BE;
         t.addr_bytes = bitlen_to_bytes(FIELD_EX32(s->user1_reg, SPI_USER1, ADDR_BITLEN));
         t.addr = bswap32(s->addr_reg) >> (32 - t.addr_bytes * 8);
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_CE_MASK:
+    if (cmd_reg & R_SPI_CMD_CE_MASK) {
         t.cmd = CMD_CE;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_DP_MASK:
+    if (cmd_reg & R_SPI_CMD_DP_MASK) {
         t.cmd = CMD_DP;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_RES_MASK:
+    if (cmd_reg & R_SPI_CMD_RES_MASK) {
         t.cmd = CMD_RES;
         t.data = &s->data_reg[0];
         t.data_rx_bytes = 3;
-        break;
+        goto out;
+    }
 
-    case R_SPI_CMD_USR_MASK:
+    if (cmd_reg & R_SPI_CMD_USR_MASK) {
         maybe_encrypt_data(s);
         if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
@@ -293,10 +352,12 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
             t.data = &s->data_reg[0];
             t.data_rx_bytes = bitlen_to_bytes(s->miso_dlen_reg);
         }
-        break;
-    default:
-        return;
+        goto out;
     }
+
+    return;
+
+out:
     esp32_spi_transaction(s, &t);
 }
 
@@ -316,6 +377,9 @@ static void esp32_spi_reset_hold(Object *obj, ResetType type)
     s->user2_reg = FIELD_DP32(0, SPI_USER2, COMMAND_BITLEN, 4);
     s->user2_reg = FIELD_DP32(s->user2_reg, SPI_USER2, COMMAND_VALUE, 0);
     s->status_reg = 0;
+    s->cmd_reg = 0;
+    s->slave_reg = 0;
+    esp32_spi_update_irq(s);
 }
 
 static void esp32_spi_realize(DeviceState *dev, Error **errp)

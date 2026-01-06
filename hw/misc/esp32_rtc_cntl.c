@@ -308,6 +308,9 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
         switch (addr) {
         case A_RTC_CNTL_WDTCONFIG0: {
             uint32_t old = s->wdtconfig0_reg;
+            if (s->wdt_disable) {
+                value &= ~R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK;
+            }
             s->wdtconfig0_reg = value;
             if (!(old & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK) &&
                 (s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK)) {
@@ -424,6 +427,12 @@ static uint32_t esp32_rtc_wdt_stage_hold(const Esp32RtcCntlState *s, uint32_t st
 
 static void esp32_rtc_wdt_update(Esp32RtcCntlState *s, bool reset_stage)
 {
+    if (s->wdt_disable) {
+        timer_del(&s->wdt_timer);
+        s->wdt_stage = 0;
+        return;
+    }
+
     if (reset_stage) {
         s->wdt_stage = 0;
     }
@@ -448,6 +457,10 @@ static void esp32_rtc_wdt_update(Esp32RtcCntlState *s, bool reset_stage)
 static void esp32_rtc_wdt_cb(void *opaque)
 {
     Esp32RtcCntlState *s = ESP32_RTC_CNTL(opaque);
+
+    if (s->wdt_disable) {
+        return;
+    }
 
     if (!(s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK)) {
         return;
@@ -598,6 +611,7 @@ static void esp32_rtc_cntl_init(Object *obj)
 }
 
 static Property esp32_rtc_cntl_properties[] = {
+    DEFINE_PROP_BOOL("wdt_disable", Esp32RtcCntlState, wdt_disable, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 
