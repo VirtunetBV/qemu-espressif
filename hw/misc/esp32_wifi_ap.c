@@ -38,8 +38,8 @@
 // 50ms between beacons
 #define BEACON_TIME 50000000
 #define INTER_FRAME_TIME 5000000
-#define DEBUG 1
-#define DEBUG_DUMPFRAMES 1
+#define DEBUG 0
+#define DEBUG_DUMPFRAMES 0
 
 // channel 12, 13 and 14 aren't scanned with probe requests, but by listening to beacons
 // likely because those channels aren't freely licensed in all countries
@@ -59,7 +59,9 @@ static void Esp32_WLAN_beacon_timer(void *opaque)
     // only send a beacon if we are an access point
     if(s->ap_state!=Esp32_WLAN__STATE_STA_ASSOCIATED) {
         if (access_points[s->beacon_ap].channel==esp32_wifi_channel) {
-            printf("QEMU: sending beacon for AP %s\n", access_points[s->beacon_ap].ssid);
+            if (DEBUG) {
+                printf("QEMU: sending beacon for AP %s\n", access_points[s->beacon_ap].ssid);
+            }
             memcpy(s->ap_macaddr,access_points[s->beacon_ap].mac_address,6);
             frame = Esp32_WLAN_create_beacon_frame(&access_points[s->beacon_ap]);
             memcpy(frame->receiver_address, BROADCAST, 6);
@@ -186,7 +188,9 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
     if (frame) {
         /* send message to ESP32 AP */
         if(s->ap_state == Esp32_WLAN__STATE_STA_ASSOCIATED) {
-            printf("QEMU: Esp32_WLAN_create_data_packet not yet implemented for STA!");
+            if (DEBUG) {
+                printf("QEMU: Esp32_WLAN_create_data_packet not yet implemented for STA!\n");
+            }
             frame->frame_control.to_ds = 1;
             frame->frame_control.from_ds = 0;
             memcpy(frame->receiver_address, s->ap_macaddr, 6); // ?
@@ -234,7 +238,7 @@ void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s) {
     // it when necessary...
     s->inject_timer = timer_new_ns(QEMU_CLOCK_REALTIME, Esp32_WLAN_inject_timer, s);
 
-    s->nic = qemu_new_nic(&net_info, &s->conf, object_get_typename(OBJECT(s)), dev->id, s);
+    s->nic = qemu_new_nic(&net_info, &s->conf, object_get_typename(OBJECT(s)), dev->id, NULL, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->macaddr);
 }
 
@@ -356,7 +360,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     if ((frame->frame_control.type == IEEE80211_TYPE_DATA) &&
         (frame->frame_control.sub_type == IEEE80211_TYPE_DATA_SUBTYPE_DATA)) {
         if(s->ap_state == Esp32_WLAN__STATE_STA_DHCP) {
-            printf("QEMU: STA DHCP not implemented yet\n");
+            if (DEBUG) {
+                printf("QEMU: STA DHCP not implemented yet\n");
+            }
             dhcp_request_t *req=(dhcp_request_t *)&frame->data_and_fcs[8];
             // check for a dhcp offer
             if(req->dhcp.bp_options[0]==0x35 && req->dhcp.bp_options[2]==0x2) {
@@ -404,7 +410,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
             // send frame
             qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
         } else if (s->ap_state == Esp32_WLAN__STATE_STA_ASSOCIATED) {
-            printf("QEMU: STA DATA, NOT IMPLEMENTED YET\n");
+            if (DEBUG) {
+                printf("QEMU: STA DATA, NOT IMPLEMENTED YET\n");
+            }
         }
     }
 }

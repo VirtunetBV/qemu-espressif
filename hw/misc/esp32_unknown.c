@@ -27,7 +27,8 @@ static uint64_t esp32_unknown_read(void *opaque, hwaddr addr, unsigned int size)
         }
 
         default: {
-            printf("unknown read for %016lX\n", addr);
+            qemu_log_mask(LOG_UNIMP, "esp32.unknown: read addr=0x%0*" HWADDR_PRIx " size=%u\n",
+                          (int)(sizeof(hwaddr) * 2), addr, size);
             break;
         }
     }
@@ -40,7 +41,9 @@ static void esp32_unknown_write(void *opaque, hwaddr addr,
 {
     addr += 0x3ff00000;
     // Esp32UnknownState *s = ESP32_UNKNOWN(opaque);
-    printf("unknown write for %016lX, setting to %ld (size=%d)\n", addr, value, size);
+    qemu_log_mask(LOG_UNIMP,
+                  "esp32.unknown: write addr=0x%0*" HWADDR_PRIx " value=0x%0*" PRIx64 " size=%u\n",
+                  (int)(sizeof(hwaddr) * 2), addr, size * 2, value, size);
     
 }
 

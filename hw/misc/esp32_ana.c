@@ -32,7 +32,7 @@ static void esp32_ana_write(void *opaque, hwaddr addr, uint64_t value,
         int v = value&255;
         if ((v % 10)==4) {
             esp32_wifi_channel=(v/10)-1;
-            printf("esp32 wifi channel register = %d\n", esp32_wifi_channel);
+            qemu_log_mask(LOG_GUEST_ERROR, "esp32.ana: wifi channel = %d\n", esp32_wifi_channel);
         }
     }
     s->mem[addr/4]=value;

@@ -38,6 +38,7 @@
 #include "exec/exec-all.h"
 #include "net/net.h"
 #include "elf.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_ESP32_SOC "xtensa.esp32"
 #define ESP32_SOC(obj) OBJECT_CHECK(Esp32SocState, (obj), TYPE_ESP32_SOC)
@@ -101,6 +102,12 @@ static void esp32_dig_reset(void *opaque, int n, int level)
 {
     Esp32SocState *s = ESP32_SOC(opaque);
     if (level) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "ESP32: DIG reset requested at CPU0 PC=0x%08x CPU1 PC=0x%08x cause0=%u cause1=%u\n",
+                      (uint32_t)s->cpu[0].env.pc,
+                      (uint32_t)s->cpu[1].env.pc,
+                      s->rtc_cntl.reset_cause[0],
+                      s->rtc_cntl.reset_cause[1]);
         esp32_dport_clear_ill_trap_state(&s->dport);
         s->requested_reset = ESP32_SOC_RESET_DIG;
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
@@ -917,6 +924,18 @@ static void esp32_machine_init(MachineState *machine)
      * so that ELF gets loaded into virtual addresses
      */
     cpu_reset(CPU(&ss->cpu[0]));
+
+    if (getenv("ESP32_BREAK_RESTART")) {
+        int err = cpu_breakpoint_insert(CPU(&ss->cpu[0]), 0x40116cc0, BP_CPU, NULL);
+        if (err) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "ESP32: failed to insert restart breakpoint: %d\n",
+                          err);
+        } else {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "ESP32: inserted restart breakpoint at 0x40116cc0\n");
+        }
+    }
 
     const char *load_elf_filename = NULL;
     if (machine->firmware) {
