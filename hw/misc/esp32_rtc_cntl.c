@@ -12,6 +12,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
+#include "qemu/bswap.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/hw.h"
@@ -36,6 +37,131 @@ enum {
 };
 
 #define ESP32_RTC_WDT_WKEY 0x50d83aa1u
+
+static uint32_t esp32_process_stack_pc(uint32_t pc)
+{
+    /* ESP32 uses a special encoding of return addresses on the stack. */
+    if (pc & 0x80000000U) {
+        return (pc & 0x3fffffffU) | 0x40000000U;
+    }
+    return pc;
+}
+
+static bool esp32_stack_ptr_is_sane(uint32_t sp)
+{
+    if ((sp & 0x3) != 0) {
+        return false;
+    }
+    /*
+     * Heuristic: typical ESP32 task stacks live in DRAM. This is only used for
+     * debug logs, so keep it conservative.
+     */
+    return (sp >= 0x3ff80000U && sp < 0x40000000U);
+}
+
+static bool esp32_read_u32_debug(CPUState *cpu, uint32_t addr, uint32_t *out)
+{
+    uint32_t raw;
+    if (cpu_memory_rw_debug(cpu, addr, &raw, sizeof(raw), false) != 0) {
+        return false;
+    }
+    *out = le32_to_cpu(raw);
+    return true;
+}
+
+static bool esp32_cpu_gdb_read_u32(CPUState *cpu, int reg, uint32_t *out)
+{
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    if (!cc || !cc->gdb_read_register || !out) {
+        return false;
+    }
+
+    GByteArray *buf = g_byte_array_sized_new(sizeof(uint32_t));
+    int len = cc->gdb_read_register(cpu, buf, reg);
+    if (len != (int)sizeof(uint32_t) || buf->len < sizeof(uint32_t)) {
+        g_byte_array_unref(buf);
+        return false;
+    }
+    *out = ldl_le_p(buf->data);
+    g_byte_array_unref(buf);
+    return true;
+}
+
+static void esp32_log_backtrace(CPUState *cpu, int depth)
+{
+    if (!cpu || !qemu_loglevel_mask(LOG_GUEST_ERROR)) {
+        return;
+    }
+
+    /*
+     * Avoid target-specific CPU headers here (this file is "common code" in
+     * QEMU). Use the Xtensa GDB register map instead:
+     * - reg 0 is PC
+     * - reg 69 is WINDOWBASE
+     * - regs 1..64 are AR0..AR63 (physical regs)
+     *
+     * Live A0..A15 map onto AR[(WINDOWBASE * 4 + N) % 64].
+     */
+    uint32_t pc = 0;
+    uint32_t windowbase = 0;
+    if (!esp32_cpu_gdb_read_u32(cpu, 0, &pc) ||
+        !esp32_cpu_gdb_read_u32(cpu, 69, &windowbase)) {
+        return;
+    }
+    windowbase &= 0xFF;
+    uint32_t sp = 0;
+    uint32_t next_pc = 0;
+    int a0_phys = (int)((windowbase * 4 + 0) % 64);
+    int a1_phys = (int)((windowbase * 4 + 1) % 64);
+    if (!esp32_cpu_gdb_read_u32(cpu, 1 + a0_phys, &next_pc) ||
+        !esp32_cpu_gdb_read_u32(cpu, 1 + a1_phys, &sp)) {
+        return;
+    }
+
+    char line[2048];
+    size_t off = 0;
+    off += snprintf(line + off, sizeof(line) - off, "Backtrace:");
+    off += snprintf(line + off, sizeof(line) - off, " 0x%08x:0x%08x",
+                    esp32_process_stack_pc(pc), sp);
+
+    bool corrupted = !esp32_stack_ptr_is_sane(sp);
+    for (int i = 0; i < depth && next_pc != 0 && !corrupted; ++i) {
+        uint32_t base = sp;
+        if (base < 16) {
+            corrupted = true;
+            break;
+        }
+
+        uint32_t prev_next_pc = 0;
+        uint32_t prev_sp = 0;
+        if (!esp32_read_u32_debug(cpu, base - 16, &prev_next_pc) ||
+            !esp32_read_u32_debug(cpu, base - 12, &prev_sp)) {
+            corrupted = true;
+            break;
+        }
+
+        pc = next_pc;
+        sp = prev_sp;
+        next_pc = prev_next_pc;
+
+        if (!esp32_stack_ptr_is_sane(sp)) {
+            corrupted = true;
+        }
+
+        if (off + 32 >= sizeof(line)) {
+            break;
+        }
+        off += snprintf(line + off, sizeof(line) - off, " 0x%08x:0x%08x",
+                        esp32_process_stack_pc(pc), sp);
+    }
+
+    if (corrupted) {
+        off += snprintf(line + off, sizeof(line) - off, " |<-CORRUPTED");
+    } else if (next_pc != 0) {
+        off += snprintf(line + off, sizeof(line) - off, " |<-CONTINUES");
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "%s\n", line);
+}
 
 static uint64_t esp32_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -204,6 +330,7 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
                 if (current_cpu && qemu_loglevel_mask(LOG_GUEST_ERROR) &&
                     s->wdtconfig1_reg <= 200000) {
                     cpu_dump_state(current_cpu, stderr, 0);
+                    esp32_log_backtrace(current_cpu, 16);
                 }
             }
             esp32_rtc_wdt_update(s, true);
