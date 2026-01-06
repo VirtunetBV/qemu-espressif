@@ -110,6 +110,26 @@ static void esp32_cpu_reset(void* opaque, int n, int level)
 {
     Esp32SocState *s = ESP32_SOC(opaque);
     if (level) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "ESP32: CPU%d SW reset requested at PC=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x a10=0x%08x a11=0x%08x\n",
+                      n,
+                      (uint32_t)s->cpu[n].env.pc,
+                      (uint32_t)s->cpu[n].env.regs[0],
+                      (uint32_t)s->cpu[n].env.regs[1],
+                      (uint32_t)s->cpu[n].env.regs[2],
+                      (uint32_t)s->cpu[n].env.regs[3],
+                      (uint32_t)s->cpu[n].env.regs[10],
+                      (uint32_t)s->cpu[n].env.regs[11]);
+        if (n == 1) {
+            uint32_t cpu0_a0 = (uint32_t)s->cpu[0].env.regs[0];
+            uint32_t cpu0_retaddr = (cpu0_a0 & 0x3fffffffU) | 0x40000000U;
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "ESP32: CPU1 reset while CPU0 at PC=0x%08x a0=0x%08x ret=0x%08x a1=0x%08x\n",
+                          (uint32_t)s->cpu[0].env.pc,
+                          cpu0_a0,
+                          cpu0_retaddr,
+                          (uint32_t)s->cpu[0].env.regs[1]);
+        }
         s->requested_reset = (n == 0) ? ESP32_SOC_RESET_PROCPU : ESP32_SOC_RESET_APPCPU;
         /* Use different cause for APP CPU so that its reset doesn't cause QEMU to exit,
          * when -no-reboot option is given.
@@ -261,6 +281,19 @@ static void esp32_soc_add_unimp_device(MemoryRegion *dest, const char* name, hwa
     create_unimplemented_device(name, dport_base_addr, size);
     char * name_apb = g_strdup_printf("%s-apb", name);
     create_unimplemented_device(name_apb, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, size);
+    g_free(name_apb);
+}
+
+static void esp32_soc_add_regfile(MemoryRegion *dest, const char *name, hwaddr dport_base_addr, size_t size)
+{
+    MemoryRegion *mr = g_new(MemoryRegion, 1);
+    memory_region_init_ram(mr, NULL, name, size, &error_fatal);
+    memory_region_add_subregion_overlap(dest, dport_base_addr, mr, 0);
+
+    MemoryRegion *mr_apb = g_new(MemoryRegion, 1);
+    char *name_apb = g_strdup_printf("%s-apb", name);
+    memory_region_init_alias(mr_apb, NULL, name_apb, mr, 0, size);
+    memory_region_add_subregion_overlap(dest, dport_base_addr - DR_REG_DPORT_APB_BASE + APB_REG_BASE, mr_apb, 0);
     g_free(name_apb);
 }
 
@@ -517,9 +550,13 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
 
     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_SENS_BASE, 0x400);
-    esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
+    /* For now, map these register blocks as a simple regfile (read-back storage)
+     * instead of an unimplemented device. Some firmware expects read-back of
+     * GPIO/IOMUX configuration writes during bring-up.
+     */
+    esp32_soc_add_regfile(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
+    esp32_soc_add_regfile(sys_mem, "esp32.sens", DR_REG_SENS_BASE, 0x400);
+    esp32_soc_add_regfile(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
@@ -763,16 +800,15 @@ static void esp32_machine_init_openeth(Esp32SocState *ss)
     qemu_irq irq = qdev_get_gpio_in(DEVICE(&ss->intmatrix), ETS_ETH_MAC_INTR_SOURCE);
 
     DeviceState* open_eth_dev = qemu_create_nic_device("open_eth", true, NULL);
-    if (!open_eth_dev) {
-        return;
+    if (open_eth_dev) {
+        ss->eth = open_eth_dev;
+        sbd = SYS_BUS_DEVICE(open_eth_dev);
+        sysbus_realize_and_unref(sbd, &error_fatal);
+        sysbus_connect_irq(sbd, 0, irq);
+        memory_region_add_subregion(sys_mem, reg_base, sysbus_mmio_get_region(sbd, 0));
+        memory_region_add_subregion(sys_mem, desc_base, sysbus_mmio_get_region(sbd, 1));
     }
 
-    ss->eth = open_eth_dev;
-    sbd = SYS_BUS_DEVICE(open_eth_dev);
-    sysbus_realize_and_unref(sbd, &error_fatal);
-    sysbus_connect_irq(sbd, 0, irq);
-    memory_region_add_subregion(sys_mem, reg_base, sysbus_mmio_get_region(sbd, 0));
-    memory_region_add_subregion(sys_mem, desc_base, sysbus_mmio_get_region(sbd, 1));
 }
 
 static void esp32_machine_init_sd(Esp32SocState *ss)

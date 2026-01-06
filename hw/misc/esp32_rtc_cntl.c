@@ -15,6 +15,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/hw.h"
+#include "hw/core/cpu.h"
 #include "hw/sysbus.h"
 #include "hw/irq.h"
 #include "hw/qdev-properties.h"
@@ -23,6 +24,18 @@
 
 static void esp32_rtc_update_cpu_stall(Esp32RtcCntlState* s);
 static void esp32_rtc_update_clk(Esp32RtcCntlState* s);
+static void esp32_rtc_wdt_update(Esp32RtcCntlState *s, bool reset_stage);
+static void esp32_rtc_wdt_cb(void *opaque);
+
+enum {
+    RTC_WDT_STG_SEL_OFF = 0,
+    RTC_WDT_STG_SEL_INT = 1,
+    RTC_WDT_STG_SEL_RESET_CPU = 2,
+    RTC_WDT_STG_SEL_RESET_SYSTEM = 3,
+    RTC_WDT_STG_SEL_RESET_RTC = 4,
+};
+
+#define ESP32_RTC_WDT_WKEY 0x50d83aa1u
 
 static uint64_t esp32_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -60,6 +73,28 @@ static uint64_t esp32_rtc_cntl_read(void *opaque, hwaddr addr, unsigned int size
         r = FIELD_DP32(r, RTC_CNTL_CLK_CONF, SOC_CLK_SEL, s->soc_clk);
         r = FIELD_DP32(r, RTC_CNTL_CLK_CONF, FAST_CLK_RTC_SEL, s->rtc_fastclk);
         r = FIELD_DP32(r, RTC_CNTL_CLK_CONF, ANA_CLK_RTC_SEL, s->rtc_slowclk);
+        break;
+
+    case A_RTC_CNTL_WDTCONFIG0:
+        r = s->wdtconfig0_reg;
+        break;
+    case A_RTC_CNTL_WDTCONFIG1:
+        r = s->wdtconfig1_reg;
+        break;
+    case A_RTC_CNTL_WDTCONFIG2:
+        r = s->wdtconfig2_reg;
+        break;
+    case A_RTC_CNTL_WDTCONFIG3:
+        r = s->wdtconfig3_reg;
+        break;
+    case A_RTC_CNTL_WDTCONFIG4:
+        r = s->wdtconfig4_reg;
+        break;
+    case A_RTC_CNTL_WDTFEED:
+        r = 0;
+        break;
+    case A_RTC_CNTL_WDTWPROTECT:
+        r = s->wdtwprotect_reg;
         break;
 
     case A_RTC_CNTL_SW_CPU_STALL:
@@ -131,6 +166,91 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
         esp32_rtc_update_clk(s);
         break;
 
+    case A_RTC_CNTL_WDTWPROTECT:
+        s->wdtwprotect_reg = value;
+        break;
+
+    case A_RTC_CNTL_WDTCONFIG0:
+    case A_RTC_CNTL_WDTCONFIG1:
+    case A_RTC_CNTL_WDTCONFIG2:
+    case A_RTC_CNTL_WDTCONFIG3:
+    case A_RTC_CNTL_WDTCONFIG4:
+    case A_RTC_CNTL_WDTFEED:
+        if (s->wdtwprotect_reg != ESP32_RTC_WDT_WKEY) {
+            break;
+        }
+        switch (addr) {
+        case A_RTC_CNTL_WDTCONFIG0: {
+            uint32_t old = s->wdtconfig0_reg;
+            s->wdtconfig0_reg = value;
+            if (!(old & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK) &&
+                (s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK)) {
+                uint32_t pc = 0;
+                int cpu_index = -1;
+                if (current_cpu) {
+                    cpu_index = current_cpu->cpu_index;
+                    CPUClass *cc = CPU_GET_CLASS(current_cpu);
+                    if (cc->get_pc) {
+                        pc = (uint32_t)cc->get_pc(current_cpu);
+                    }
+                }
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "RTC_CNTL: RTCWDT enabled cpu=%d pc=0x%08x cfg0=0x%08x stg0=%u hold0=%u\n",
+                              cpu_index,
+                              pc,
+                              s->wdtconfig0_reg,
+                              (unsigned)FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_STG0),
+                              s->wdtconfig1_reg);
+                if (current_cpu && qemu_loglevel_mask(LOG_GUEST_ERROR) &&
+                    s->wdtconfig1_reg <= 200000) {
+                    cpu_dump_state(current_cpu, stderr, 0);
+                }
+            }
+            esp32_rtc_wdt_update(s, true);
+            break;
+        }
+        case A_RTC_CNTL_WDTCONFIG1:
+            s->wdtconfig1_reg = value;
+            if (s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK) {
+                uint32_t pc = 0;
+                int cpu_index = -1;
+                if (current_cpu) {
+                    cpu_index = current_cpu->cpu_index;
+                    CPUClass *cc = CPU_GET_CLASS(current_cpu);
+                    if (cc->get_pc) {
+                        pc = (uint32_t)cc->get_pc(current_cpu);
+                    }
+                }
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "RTC_CNTL: RTCWDT hold0 write cpu=%d pc=0x%08x hold0=%u\n",
+                              cpu_index,
+                              pc,
+                              s->wdtconfig1_reg);
+            }
+            esp32_rtc_wdt_update(s, false);
+            break;
+        case A_RTC_CNTL_WDTCONFIG2:
+            s->wdtconfig2_reg = value;
+            esp32_rtc_wdt_update(s, false);
+            break;
+        case A_RTC_CNTL_WDTCONFIG3:
+            s->wdtconfig3_reg = value;
+            esp32_rtc_wdt_update(s, false);
+            break;
+        case A_RTC_CNTL_WDTCONFIG4:
+            s->wdtconfig4_reg = value;
+            esp32_rtc_wdt_update(s, false);
+            break;
+        case A_RTC_CNTL_WDTFEED:
+            if (value & R_RTC_CNTL_WDTFEED_WDT_FEED_MASK) {
+                esp32_rtc_wdt_update(s, true);
+            }
+            break;
+        default:
+            break;
+        }
+        break;
+
     case A_RTC_CNTL_SW_CPU_STALL:
         s->sw_cpu_stall_reg = value;
         esp32_rtc_update_cpu_stall(s);
@@ -142,6 +262,116 @@ static void esp32_rtc_cntl_write(void *opaque, hwaddr addr, uint64_t value,
     case A_RTC_CNTL_STORE7:
         s->scratch_reg[(addr - A_RTC_CNTL_STORE4) / 4 + 4] = value;
         break;
+    }
+}
+
+static uint32_t esp32_rtc_wdt_stage_action(const Esp32RtcCntlState *s, uint32_t stage)
+{
+    switch (stage) {
+    case 0:
+        return FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_STG0);
+    case 1:
+        return FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_STG1);
+    case 2:
+        return FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_STG2);
+    case 3:
+    default:
+        return FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_STG3);
+    }
+}
+
+static uint32_t esp32_rtc_wdt_stage_hold(const Esp32RtcCntlState *s, uint32_t stage)
+{
+    switch (stage) {
+    case 0:
+        return s->wdtconfig1_reg;
+    case 1:
+        return s->wdtconfig2_reg;
+    case 2:
+        return s->wdtconfig3_reg;
+    case 3:
+    default:
+        return s->wdtconfig4_reg;
+    }
+}
+
+static void esp32_rtc_wdt_update(Esp32RtcCntlState *s, bool reset_stage)
+{
+    if (reset_stage) {
+        s->wdt_stage = 0;
+    }
+
+    if (!(s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK)) {
+        timer_del(&s->wdt_timer);
+        s->wdt_stage = 0;
+        return;
+    }
+
+    uint32_t hold = esp32_rtc_wdt_stage_hold(s, s->wdt_stage);
+    if (hold == 0) {
+        hold = 1;
+    }
+
+    uint32_t freq_hz = s->rtc_slowclk_freq ? s->rtc_slowclk_freq : 150000;
+    uint64_t ns = muldiv64((uint64_t)hold, NANOSECONDS_PER_SECOND, freq_hz);
+    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod(&s->wdt_timer, now + ns);
+}
+
+static void esp32_rtc_wdt_cb(void *opaque)
+{
+    Esp32RtcCntlState *s = ESP32_RTC_CNTL(opaque);
+
+    if (!(s->wdtconfig0_reg & R_RTC_CNTL_WDTCONFIG0_WDT_EN_MASK)) {
+        return;
+    }
+
+    uint32_t action = esp32_rtc_wdt_stage_action(s, s->wdt_stage);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "RTC_CNTL: RTCWDT timeout stage=%u action=%u\n",
+                  s->wdt_stage,
+                  action);
+    switch (action) {
+    case RTC_WDT_STG_SEL_INT:
+        qemu_irq_pulse(s->irq);
+        break;
+    case RTC_WDT_STG_SEL_RESET_CPU: {
+        bool procpu = FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_PROCPU_RESET_EN);
+        bool appcpu = FIELD_EX32(s->wdtconfig0_reg, RTC_CNTL_WDTCONFIG0, WDT_APPCPU_RESET_EN);
+        if (!procpu && !appcpu) {
+            procpu = true;
+            appcpu = true;
+        }
+        if (procpu) {
+            s->reset_cause[0] = ESP32_RTCWDT_CPU_RESET;
+            qemu_irq_pulse(s->cpu_reset_req[0]);
+        }
+        if (appcpu) {
+            s->reset_cause[1] = ESP32_RTCWDT_CPU_RESET;
+            qemu_irq_pulse(s->cpu_reset_req[1]);
+        }
+        return;
+    }
+    case RTC_WDT_STG_SEL_RESET_SYSTEM:
+        s->reset_cause[0] = ESP32_RTCWDT_SYS_RESET;
+        s->reset_cause[1] = ESP32_RTCWDT_SYS_RESET;
+        qemu_irq_pulse(s->dig_reset_req);
+        return;
+    case RTC_WDT_STG_SEL_RESET_RTC:
+        s->reset_cause[0] = ESP32_RTCWDT_RTC_RESET;
+        s->reset_cause[1] = ESP32_RTCWDT_RTC_RESET;
+        qemu_irq_pulse(s->dig_reset_req);
+        return;
+    case RTC_WDT_STG_SEL_OFF:
+    default:
+        break;
+    }
+
+    if (s->wdt_stage < 3) {
+        s->wdt_stage++;
+        esp32_rtc_wdt_update(s, false);
+    } else {
+        esp32_rtc_wdt_update(s, false);
     }
 }
 
@@ -166,8 +396,16 @@ static void esp32_rtc_update_clk(Esp32RtcCntlState* s)
 {
     const uint32_t slowclk_freq[] = {150000, 32768, 8000000/256};
     const uint32_t fastclk_freq[] = {s->xtal_apb_freq / 4, 8000000};
-    s->rtc_slowclk_freq = slowclk_freq[s->rtc_slowclk];
-    s->rtc_fastclk_freq = fastclk_freq[s->rtc_fastclk];
+    uint32_t slow_sel = s->rtc_slowclk;
+    uint32_t fast_sel = s->rtc_fastclk;
+    if (slow_sel >= ARRAY_SIZE(slowclk_freq)) {
+        slow_sel = 0;
+    }
+    if (fast_sel >= ARRAY_SIZE(fastclk_freq)) {
+        fast_sel = 0;
+    }
+    s->rtc_slowclk_freq = slowclk_freq[slow_sel];
+    s->rtc_fastclk_freq = fastclk_freq[fast_sel];
     qemu_irq_pulse(s->clk_update);
 }
 
@@ -182,6 +420,14 @@ static void esp32_rtc_cntl_reset_hold(Object *obj, ResetType type)
     Esp32RtcCntlState *s = ESP32_RTC_CNTL(obj);
 
     s->time_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_del(&s->wdt_timer);
+    s->wdt_stage = 0;
+    s->wdtwprotect_reg = ESP32_RTC_WDT_WKEY;
+    s->wdtconfig0_reg = 0;
+    s->wdtconfig1_reg = 128000;
+    s->wdtconfig2_reg = 80000;
+    s->wdtconfig3_reg = 0xfff;
+    s->wdtconfig4_reg = 0xfff;
 }
 
 static void esp32_rtc_cntl_realize(DeviceState *dev, Error **errp)
@@ -206,6 +452,15 @@ static void esp32_rtc_cntl_init(Object *obj)
         s->reset_cause[i] = ESP32_POWERON_RESET;
         s->stat_vector_sel[i] = true;
     }
+
+    timer_init_ns(&s->wdt_timer, QEMU_CLOCK_VIRTUAL, esp32_rtc_wdt_cb, s);
+    s->wdt_stage = 0;
+    s->wdtwprotect_reg = ESP32_RTC_WDT_WKEY;
+    s->wdtconfig0_reg = 0;
+    s->wdtconfig1_reg = 128000;
+    s->wdtconfig2_reg = 80000;
+    s->wdtconfig3_reg = 0xfff;
+    s->wdtconfig4_reg = 0xfff;
 
     s->rtc_slowclk = ESP32_SLOW_CLK_RC;
     s->rtc_fastclk = ESP32_FAST_CLK_8M;

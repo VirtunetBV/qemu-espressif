@@ -3,6 +3,7 @@
 #include "hw/hw.h"
 #include "hw/sysbus.h"
 #include "hw/registerfields.h"
+#include "qemu/timer.h"
 
 #define TYPE_ESP32_RTC_CNTL "misc.esp32.rtc_cntl"
 #define ESP32_RTC_CNTL(obj) OBJECT_CHECK(Esp32RtcCntlState, (obj), TYPE_ESP32_RTC_CNTL)
@@ -68,6 +69,14 @@ typedef struct Esp32RtcCntlState {
     int64_t time_base_ns;
 
     uint32_t options0_reg;
+    uint32_t wdtconfig0_reg;
+    uint32_t wdtconfig1_reg;
+    uint32_t wdtconfig2_reg;
+    uint32_t wdtconfig3_reg;
+    uint32_t wdtconfig4_reg;
+    uint32_t wdtwprotect_reg;
+    uint32_t wdt_stage;
+    QEMUTimer wdt_timer;
     uint64_t time_reg;
     uint32_t sw_cpu_stall_reg;
     uint32_t scratch_reg[ESP32_RTC_CNTL_SCRATCH_REG_COUNT];
@@ -103,6 +112,25 @@ REG32(RTC_CNTL_CLK_CONF, 0x70)
     FIELD(RTC_CNTL_CLK_CONF, ANA_CLK_RTC_SEL, 30, 2)
     FIELD(RTC_CNTL_CLK_CONF, FAST_CLK_RTC_SEL, 29, 1)
     FIELD(RTC_CNTL_CLK_CONF, SOC_CLK_SEL, 27, 2)
+
+REG32(RTC_CNTL_WDTCONFIG0, 0x8c)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_EN, 31, 1)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_STG0, 28, 3)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_STG1, 25, 3)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_STG2, 22, 3)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_STG3, 19, 3)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_PROCPU_RESET_EN, 9, 1)
+    FIELD(RTC_CNTL_WDTCONFIG0, WDT_APPCPU_RESET_EN, 8, 1)
+
+REG32(RTC_CNTL_WDTCONFIG1, 0x90)
+REG32(RTC_CNTL_WDTCONFIG2, 0x94)
+REG32(RTC_CNTL_WDTCONFIG3, 0x98)
+REG32(RTC_CNTL_WDTCONFIG4, 0x9c)
+
+REG32(RTC_CNTL_WDTFEED, 0xa0)
+    FIELD(RTC_CNTL_WDTFEED, WDT_FEED, 31, 1)
+
+REG32(RTC_CNTL_WDTWPROTECT, 0xa4)
 
 REG32(RTC_CNTL_SW_CPU_STALL, 0xac)
     FIELD(RTC_CNTL_SW_CPU_STALL, PROCPU_C1, 26, 6)
