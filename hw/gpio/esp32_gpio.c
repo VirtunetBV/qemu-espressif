@@ -153,7 +153,9 @@ static void esp32_gpio_init(Object *obj)
     /* Set the default value for the strap_mode property */
     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
     memset(s->mem, 0, sizeof(s->mem));
-    s->input0 = 0xffffffff;
+    /* Default GPIO inputs to pulled-high, but keep GPIO19 low so the EVCS welded-contacts
+     * self-test can pass under QEMU (it samples gpio_get_level(19)). */
+    s->input0 = 0xffffffffu & ~(1u << 19);
     s->input1 = 0xffffffff;
 
     memory_region_init_io(&s->iomem, obj, &uart_ops, s,

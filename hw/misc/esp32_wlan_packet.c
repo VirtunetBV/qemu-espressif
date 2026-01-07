@@ -100,6 +100,28 @@ static void add_rates(mac80211_frame *frame) {
     add_tag(frame,IEEE80211_BEACON_PARAM_EXTENDED_RATES,4,(uint8_t[]){0x6c,0x12,0x24,0x48});
 }
 
+static void add_rsn(mac80211_frame *frame)
+{
+    /*
+     * Minimal RSN (WPA2-PSK/CCMP) information element:
+     *   - RSN version: 1
+     *   - Group cipher: CCMP
+     *   - Pairwise cipher: CCMP
+     *   - AKM: PSK
+     *   - Capabilities: 0
+     */
+    const uint8_t rsn[] = {
+        0x01, 0x00, /* version */
+        0x00, 0x0f, 0xac, 0x04, /* group cipher suite: CCMP */
+        0x01, 0x00, /* pairwise cipher suite count: 1 */
+        0x00, 0x0f, 0xac, 0x04, /* pairwise cipher suite list[0]: CCMP */
+        0x01, 0x00, /* AKM suite count: 1 */
+        0x00, 0x0f, 0xac, 0x02, /* AKM suite list[0]: PSK */
+        0x00, 0x00, /* RSN capabilities */
+    };
+    add_tag(frame, IEEE80211_BEACON_PARAM_RSN, sizeof(rsn), (unsigned char *)rsn);
+}
+
 static void add_ssid(mac80211_frame *frame, const char *ssid) {
     add_tag(frame,IEEE80211_BEACON_PARAM_SSID,strlen(ssid),(uint8_t *)ssid);
 }
@@ -109,10 +131,13 @@ mac80211_frame *Esp32_WLAN_create_beacon_frame(access_point_info *ap) {
     frame->signal_strength=ap->sigstrength;
     frame->beacon_info.timestamp=qemu_clock_get_ns(QEMU_CLOCK_REALTIME)/1000;
     frame->beacon_info.interval=1000;
-    frame->beacon_info.capability=1;
+    frame->beacon_info.capability = ap->wpa2_psk ? (0x0001u | 0x0010u) : 0x0001u;
     frame->pos=12;
     add_ssid(frame,ap->ssid);
     add_rates(frame);
+    if (ap->wpa2_psk) {
+        add_rsn(frame);
+    }
     add_tag(frame,IEEE80211_BEACON_PARAM_CHANNEL,1,(uint8_t[]){ap->channel});
     add_tag(frame,IEEE80211_BEACON_PARAM_TIM,4,(uint8_t[]){4,1,3,0,0});
     return frame;
@@ -202,10 +227,13 @@ mac80211_frame *Esp32_WLAN_create_probe_response(access_point_info *ap) {
     mac80211_frame *frame=new_frame(IEEE80211_TYPE_MGT,IEEE80211_TYPE_MGT_SUBTYPE_PROBE_RESP);
     frame->beacon_info.timestamp=qemu_clock_get_ns(QEMU_CLOCK_REALTIME)/1000;
     frame->beacon_info.interval=1000;
-    frame->beacon_info.capability=1;
+    frame->beacon_info.capability = ap->wpa2_psk ? (0x0001u | 0x0010u) : 0x0001u;
     frame->pos=12;
     add_ssid(frame,ap->ssid);
     add_rates(frame);
+    if (ap->wpa2_psk) {
+        add_rsn(frame);
+    }
     add_tag(frame,IEEE80211_BEACON_PARAM_CHANNEL,1,(uint8_t[]){ap->channel});
     return frame;
 }
@@ -267,14 +295,17 @@ mac80211_frame *Esp32_WLAN_create_association_response(access_point_info *ap) {
     /*
      * Fixed params... typical AP params (6 byte)
      *
-     * They include
+    * They include
      *  - Capability Information
      *  - Status code (successful 0x0)
      *  - Association ID
     */
-    add_data(frame,6,(uint8_t []){33,4,0,0,1,0xc0});
+    add_data(frame, 6, ap->wpa2_psk ? (uint8_t[]){0x31, 0x04, 0x00, 0x00, 0x01, 0xc0} : (uint8_t[]){0x21, 0x04, 0x00, 0x00, 0x01, 0xc0});
     add_ssid(frame,ap->ssid);
     add_rates(frame);
+    if (ap->wpa2_psk) {
+        add_rsn(frame);
+    }
     return frame;
 }
 

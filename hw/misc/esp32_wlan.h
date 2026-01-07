@@ -66,12 +66,14 @@
 #define IEEE80211_TYPE_CTL_SUBTYPE_ACK          0x0d
 
 #define IEEE80211_TYPE_DATA_SUBTYPE_DATA        0x00
+#define IEEE80211_TYPE_DATA_SUBTYPE_QOS_DATA    0x08
 
 #define IEEE80211_BEACON_PARAM_SSID             0x00
 #define IEEE80211_BEACON_PARAM_RATES            0x01
 #define IEEE80211_BEACON_PARAM_CHANNEL          0x03
 #define IEEE80211_BEACON_PARAM_EXTENDED_RATES   0x32
 #define IEEE80211_BEACON_PARAM_TIM              0x05
+#define IEEE80211_BEACON_PARAM_RSN              0x30
 
 
 #define IEEE80211_HEADER_SIZE               24
@@ -119,6 +121,8 @@ typedef struct access_point_info {
     int channel;
     int sigstrength;
     macaddr_t mac_address;
+    uint8_t wpa2_psk;
+    const char *psk;
 } access_point_info;
 
 enum esp32_ap_state {

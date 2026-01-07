@@ -16,7 +16,7 @@ static bool esp32_wifi_debug_enabled(void)
 {
     static int enabled = -1;
     if (enabled < 0) {
-        enabled = getenv("ESP32_WIFI_DEBUG") != NULL;
+        enabled = getenv("ESP32_WIFI_MMIO_DEBUG") != NULL;
     }
     return enabled;
 }

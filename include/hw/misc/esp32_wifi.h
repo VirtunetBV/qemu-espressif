@@ -49,6 +49,23 @@ typedef struct Esp32WifiState {
 
     uint8_t associated_ap_macaddr[6];
 
+    /* Minimal WPA2-PSK handshake state for AP emulation. */
+    uint8_t wpa2_enabled;
+    uint8_t wpa2_state;
+    uint8_t wpa2_handshake_done;
+    uint8_t wpa2_sta_mac[6];
+    const char *wpa2_ssid;
+    const char *wpa2_psk;
+    uint64_t wpa2_replay_counter;
+    uint8_t wpa2_anonce[32];
+    uint8_t wpa2_snonce[32];
+    uint8_t wpa2_pmk[32];
+    uint8_t wpa2_ptk[64];
+    uint8_t wpa2_gtk[16];
+    uint8_t wpa2_group_keyid;
+    uint64_t wpa2_tx_pn;
+    uint64_t wpa2_tx_pn_group;
+
 } Esp32WifiState;
 
 
